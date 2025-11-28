@@ -24,7 +24,35 @@ class SpokenEnglishGrammarChecker:
     def __init__(self):
         print("Loading language models...")
         self.nlp = spacy.load("en_core_web_sm")
-        self.tool = language_tool_python.LanguageTool('en-US')
+        print("[DEBUG] spaCy model loaded successfully!")
+        
+        print("[DEBUG] ====== INITIALIZING LANGUAGETOOL ======")
+        try:
+            self.tool = language_tool_python.LanguageTool('en-US')
+            print(f"[DEBUG] LanguageTool initialized successfully!")
+            print(f"[DEBUG] LanguageTool object: {self.tool}")
+            print(f"[DEBUG] LanguageTool type: {type(self.tool)}")
+            
+            # Test it immediately with a known error
+            print("[DEBUG] Running test check: 'I has a car'")
+            test_matches = self.tool.check("I has a car")
+            print(f"[DEBUG] Test check found {len(test_matches)} errors")
+            
+            if len(test_matches) > 0:
+                print(f"[DEBUG] ✓ LanguageTool is WORKING - detected errors in test")
+                for match in test_matches:
+                    print(f"[DEBUG]   - Rule: {match.ruleId if hasattr(match, 'ruleId') else 'N/A'}")
+            else:
+                print(f"[WARNING] ✗ LanguageTool found 0 errors in 'I has a car' - might not be working!")
+            
+        except Exception as e:
+            print(f"[ERROR] LanguageTool failed to initialize: {e}")
+            print(f"[ERROR] Exception type: {type(e)}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            raise
+        
+        print("[DEBUG] ====== LANGUAGETOOL READY ======")
         print("Models loaded successfully!")
    
     def analyze_grammar(self, text: str, debug: bool = False) -> Dict:
@@ -33,7 +61,19 @@ class SpokenEnglishGrammarChecker:
         Returns a detailed report with all mistakes found
         """
         # Check grammar using LanguageTool
+        print(f"[DEBUG] ====== LANGUAGETOOL CHECK ======")
+        print(f"[DEBUG] Input text: '{text}'")
+        print(f"[DEBUG] LanguageTool object: {self.tool}")
+        
         matches = self.tool.check(text)
+        
+        print(f"[DEBUG] LanguageTool returned {len(matches)} matches")
+        for i, match in enumerate(matches):
+            print(f"[DEBUG] Match {i+1}:")
+            print(f"[DEBUG]   - Rule ID: {match.ruleId if hasattr(match, 'ruleId') else 'N/A'}")
+            print(f"[DEBUG]   - Message: {match.message if hasattr(match, 'message') else 'N/A'}")
+            print(f"[DEBUG]   - Category: {match.category if hasattr(match, 'category') else 'N/A'}")
+        print(f"[DEBUG] ====== END LANGUAGETOOL CHECK ======\n")
         
         # Process with spaCy for additional context
         doc = self.nlp(text)
@@ -117,6 +157,136 @@ class SpokenEnglishGrammarChecker:
         Custom grammar rules to catch mistakes LanguageTool might miss
         """
         mistakes = []
+        
+        # ====================================================================================
+        # CHECK FOR SUBJECT-VERB AGREEMENT ERRORS (She don't -> She doesn't)
+        # ====================================================================================
+        
+        # Third person singular subjects (he, she, it, + singular nouns) need -s/-es verbs
+        # or auxiliary "does"/"doesn't" (not "do"/"don't")
+        
+        third_person_singular = ['he', 'she', 'it']
+        
+        for i, token in enumerate(doc):
+            # Pattern 1: "She/He/It + don't" (should be "doesn't")
+            if token.text.lower() in third_person_singular and i + 1 < len(doc):
+                next_token = doc[i + 1]
+                
+                if next_token.text.lower() == "don't":
+                    mistakes.append({
+                        'error_type': 'GRAMMAR',
+                        'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT_DONT',
+                        'message': f"'{token.text.capitalize()}' requires 'doesn't', not 'don't'",
+                        'mistake_text': f"{token.text} don't",
+                        'context': text,
+                        'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                        'suggestions': [f"{token.text} doesn't"],
+                        'severity': 'high'
+                    })
+            
+            # Pattern 2: "She/He/It + base verb" (should be verb+s/es)
+            # Example: "She like" -> "She likes", "He go" -> "He goes"
+            if token.text.lower() in third_person_singular and i + 1 < len(doc):
+                next_token = doc[i + 1]
+                
+                # Check if next token is a base form verb (VB tag)
+                if next_token.tag_ == 'VB' and next_token.pos_ == 'VERB':
+                    # Skip modal verbs (can, will, should, etc.) and auxiliaries
+                    if next_token.text.lower() not in ['be', 'can', 'could', 'will', 'would', 
+                                                       'shall', 'should', 'may', 'might', 'must']:
+                        # Get the third person form
+                        verb_base = next_token.text.lower()
+                        
+                        # Simple rule for adding -s or -es
+                        if verb_base.endswith(('s', 'sh', 'ch', 'x', 'z', 'o')):
+                            verb_3rd = verb_base + 'es'
+                        elif verb_base.endswith('y') and len(verb_base) > 1 and verb_base[-2] not in 'aeiou':
+                            verb_3rd = verb_base[:-1] + 'ies'
+                        else:
+                            verb_3rd = verb_base + 's'
+                        
+                        # Special cases
+                        irregular_3rd = {
+                            'have': 'has',
+                            'do': 'does',
+                            'go': 'goes',
+                            'be': 'is'
+                        }
+                        
+                        if verb_base in irregular_3rd:
+                            verb_3rd = irregular_3rd[verb_base]
+                        
+                        mistakes.append({
+                            'error_type': 'GRAMMAR',
+                            'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT',
+                            'message': f"'{token.text.capitalize()}' is third person singular and requires '{verb_3rd}', not '{verb_base}'",
+                            'mistake_text': f"{token.text} {next_token.text}",
+                            'context': text,
+                            'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                            'suggestions': [f"{token.text} {verb_3rd}"],
+                            'severity': 'high'
+                        })
+            
+            # Pattern 3: Singular noun + don't/base verb
+            # Example: "The student don't like" -> "The student doesn't like"
+            if token.tag_ == 'NN' and i + 1 < len(doc):  # Singular noun
+                next_token = doc[i + 1]
+                
+                # Check for "don't" after singular noun
+                if next_token.text.lower() == "don't":
+                    mistakes.append({
+                        'error_type': 'GRAMMAR',
+                        'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT_DONT',
+                        'message': f"Singular noun '{token.text}' requires 'doesn't', not 'don't'",
+                        'mistake_text': f"{token.text} don't",
+                        'context': text,
+                        'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                        'suggestions': [f"{token.text} doesn't"],
+                        'severity': 'high'
+                    })
+                
+                # Check for base verb after singular noun (without auxiliary)
+                elif next_token.tag_ == 'VB' and next_token.pos_ == 'VERB':
+                    # Skip if there's an auxiliary before
+                    has_auxiliary = i > 0 and doc[i - 1].text.lower() in ['will', 'would', 'can', 
+                                                                           'could', 'should', 'may', 
+                                                                           'might', 'must', 'do', 'does']
+                    
+                    if not has_auxiliary and next_token.text.lower() not in ['be', 'can', 'will', 'would']:
+                        verb_base = next_token.text.lower()
+                        
+                        # Get third person form (same logic as above)
+                        if verb_base.endswith(('s', 'sh', 'ch', 'x', 'z', 'o')):
+                            verb_3rd = verb_base + 'es'
+                        elif verb_base.endswith('y') and len(verb_base) > 1 and verb_base[-2] not in 'aeiou':
+                            verb_3rd = verb_base[:-1] + 'ies'
+                        else:
+                            verb_3rd = verb_base + 's'
+                        
+                        irregular_3rd = {
+                            'have': 'has',
+                            'do': 'does',
+                            'go': 'goes',
+                            'be': 'is'
+                        }
+                        
+                        if verb_base in irregular_3rd:
+                            verb_3rd = irregular_3rd[verb_base]
+                        
+                        mistakes.append({
+                            'error_type': 'GRAMMAR',
+                            'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT',
+                            'message': f"Singular noun '{token.text}' requires '{verb_3rd}', not '{verb_base}'",
+                            'mistake_text': f"{token.text} {next_token.text}",
+                            'context': text,
+                            'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                            'suggestions': [f"{token.text} {verb_3rd}"],
+                            'severity': 'high'
+                        })
+        
+        # ====================================================================================
+        # END OF SUBJECT-VERB AGREEMENT CHECK
+        # ====================================================================================
         
         # Countries that don't use 'the'
         countries_no_article = {
@@ -865,7 +1035,33 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "models_loaded": True}
+    """
+    Health check endpoint - also tests if LanguageTool is working
+    """
+    try:
+        # Test LanguageTool
+        test_text = "I has a car"
+        test_matches = checker.tool.check(test_text)
+        
+        languagetool_status = {
+            "working": len(test_matches) > 0,
+            "test_text": test_text,
+            "errors_found": len(test_matches),
+            "rules_triggered": [match.ruleId for match in test_matches] if hasattr(test_matches[0] if test_matches else None, 'ruleId') else []
+        }
+        
+        return {
+            "status": "healthy", 
+            "models_loaded": True,
+            "spacy_loaded": checker.nlp is not None,
+            "languagetool_status": languagetool_status
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "models_loaded": False
+        }
 
 @app.post("/analyze", response_model=GrammarResponse)
 async def analyze_text(request: TextRequest):

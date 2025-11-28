@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
     g++ \
-    openjdk-17-jre-headless \
+    openjdk-21-jre-headless \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

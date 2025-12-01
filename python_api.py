@@ -7,73 +7,23 @@ import json
 from typing import Dict, List
 import uvicorn
 
-app = FastAPI(title="Grammar Checker API")
-
-# Enable CORS for Flutter app
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your Flutter app domain
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize the grammar checker (load models once at startup)
-# # [Copy all your methods from the original script here]
 class SpokenEnglishGrammarChecker:
     def __init__(self):
+        # Load spaCy for NLP analysis
         print("Loading language models...")
         self.nlp = spacy.load("en_core_web_sm")
-        print("[DEBUG] spaCy model loaded successfully!")
         
-        print("[DEBUG] ====== INITIALIZING LANGUAGETOOL ======")
-        try:
-            self.tool = language_tool_python.LanguageTool('en-US')
-            print(f"[DEBUG] LanguageTool initialized successfully!")
-            print(f"[DEBUG] LanguageTool object: {self.tool}")
-            print(f"[DEBUG] LanguageTool type: {type(self.tool)}")
-            
-            # Test it immediately with a known error
-            print("[DEBUG] Running test check: 'I has a car'")
-            test_matches = self.tool.check("I has a car")
-            print(f"[DEBUG] Test check found {len(test_matches)} errors")
-            
-            if len(test_matches) > 0:
-                print(f"[DEBUG] ✓ LanguageTool is WORKING - detected errors in test")
-                for match in test_matches:
-                    print(f"[DEBUG]   - Rule: {match.ruleId if hasattr(match, 'ruleId') else 'N/A'}")
-            else:
-                print(f"[WARNING] ✗ LanguageTool found 0 errors in 'I has a car' - might not be working!")
-            
-        except Exception as e:
-            print(f"[ERROR] LanguageTool failed to initialize: {e}")
-            print(f"[ERROR] Exception type: {type(e)}")
-            import traceback
-            print(f"[ERROR] Traceback: {traceback.format_exc()}")
-            raise
-        
-        print("[DEBUG] ====== LANGUAGETOOL READY ======")
-        print("Models loaded successfully!")
-   
+        # Initialize LanguageTool for grammar checking
+        self.tool = language_tool_python.LanguageTool('en-US')
+        print("Models loaded successfully!\n")
+    
     def analyze_grammar(self, text: str, debug: bool = False) -> Dict:
         """
         Main function to analyze grammar mistakes in spoken English text
         Returns a detailed report with all mistakes found
         """
         # Check grammar using LanguageTool
-        print(f"[DEBUG] ====== LANGUAGETOOL CHECK ======")
-        print(f"[DEBUG] Input text: '{text}'")
-        print(f"[DEBUG] LanguageTool object: {self.tool}")
-        
         matches = self.tool.check(text)
-        
-        print(f"[DEBUG] LanguageTool returned {len(matches)} matches")
-        for i, match in enumerate(matches):
-            print(f"[DEBUG] Match {i+1}:")
-            print(f"[DEBUG]   - Rule ID: {match.ruleId if hasattr(match, 'ruleId') else 'N/A'}")
-            print(f"[DEBUG]   - Message: {match.message if hasattr(match, 'message') else 'N/A'}")
-            print(f"[DEBUG]   - Category: {match.category if hasattr(match, 'category') else 'N/A'}")
-        print(f"[DEBUG] ====== END LANGUAGETOOL CHECK ======\n")
         
         # Process with spaCy for additional context
         doc = self.nlp(text)
@@ -96,22 +46,22 @@ class SpokenEnglishGrammarChecker:
         
         # Add LanguageTool mistakes
         for match in matches:
-            # Skip only pure style/formality issues, not actual grammar error
+            # Skip only pure style/formality issues, not actual grammar errors
             if self._is_pure_style_issue(match):
                 continue
-    
+            
             mistake = {
-                'error_type': match.category if hasattr(match, 'category') else 'Grammar',
-                'rule_id': match.ruleId if hasattr(match, 'ruleId') else 'UNKNOWN',
-                'message': match.message if hasattr(match, 'message') else str(match),
-                'mistake_text': text[match.offset:match.offset + match.errorLength] if hasattr(match, 'offset') and hasattr(match, 'errorLength') else '',
-                'context': match.context if hasattr(match, 'context') else text,
+                'error_type': match.category,
+                'rule_id': match.ruleId,
+                'message': match.message,
+                'mistake_text': text[match.offset:match.offset + match.errorLength],
+                'context': match.context,
                 'position': {
-                    'start': match.offset if hasattr(match, 'offset') else 0,
-                    'end': match.offset + match.errorLength if hasattr(match, 'offset') and hasattr(match, 'errorLength') else 0
+                    'start': match.offset,
+                    'end': match.offset + match.errorLength
                 },
-                'suggestions': match.replacements[:3] if hasattr(match, 'replacements') else [],
-                'severity': 'high' if 'grammar' in (match.category if hasattr(match, 'category') else '').lower() else 'medium'
+                'suggestions': match.replacements[:3],  # Top 3 suggestions
+                'severity': 'high' if 'grammar' in match.category.lower() else 'medium'
             }
             mistakes.append(mistake)
         
@@ -153,9 +103,6 @@ class SpokenEnglishGrammarChecker:
         return report
     
     def _check_custom_rules(self, doc, text: str) -> List[Dict]:
-        """
-        Custom grammar rules to catch mistakes LanguageTool might miss
-        """
         mistakes = []
         
         # ====================================================================================
@@ -169,17 +116,29 @@ class SpokenEnglishGrammarChecker:
         
         for i, token in enumerate(doc):
             # Pattern 1: "She/He/It + don't" (should be "doesn't")
-            if token.text.lower() in third_person_singular and i + 1 < len(doc):
-                next_token = doc[i + 1]
-                
-                if next_token.text.lower() == "don't":
+            # Handle both single token "don't" and split "do" + "n't"
+            if token.text.lower() in third_person_singular:
+                # Check for single token "don't"
+                if i + 1 < len(doc) and doc[i + 1].text.lower() == "don't":
                     mistakes.append({
                         'error_type': 'GRAMMAR',
                         'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT_DONT',
                         'message': f"'{token.text.capitalize()}' requires 'doesn't', not 'don't'",
                         'mistake_text': f"{token.text} don't",
                         'context': text,
-                        'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                        'position': {'start': token.idx, 'end': doc[i + 1].idx + len(doc[i + 1].text)},
+                        'suggestions': [f"{token.text} doesn't"],
+                        'severity': 'high'
+                    })
+                # Check for split "do" + "n't"
+                elif i + 2 < len(doc) and doc[i + 1].text.lower() == "do" and doc[i + 2].text.lower() in ["n't", "not"]:
+                    mistakes.append({
+                        'error_type': 'GRAMMAR',
+                        'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT_DONT',
+                        'message': f"'{token.text.capitalize()}' requires 'doesn't', not 'don't'",
+                        'mistake_text': f"{token.text} don't",
+                        'context': text,
+                        'position': {'start': token.idx, 'end': doc[i + 2].idx + len(doc[i + 2].text)},
                         'suggestions': [f"{token.text} doesn't"],
                         'severity': 'high'
                     })
@@ -227,12 +186,12 @@ class SpokenEnglishGrammarChecker:
                             'severity': 'high'
                         })
             
-            # Pattern 3: Singular noun + don't/base verb
-            # Example: "The student don't like" -> "The student doesn't like"
+            # Pattern 3: Singular noun + don't/base verb/VBP verb (NEW - more generalized)
+            # Example: "The student don't like", "My teacher have", "My sister have"
             if token.tag_ == 'NN' and i + 1 < len(doc):  # Singular noun
                 next_token = doc[i + 1]
                 
-                # Check for "don't" after singular noun
+                # CASE A: Check for "don't" after singular noun (single token)
                 if next_token.text.lower() == "don't":
                     mistakes.append({
                         'error_type': 'GRAMMAR',
@@ -245,7 +204,60 @@ class SpokenEnglishGrammarChecker:
                         'severity': 'high'
                     })
                 
-                # Check for base verb after singular noun (without auxiliary)
+                # CASE B: Check for split "do" + "n't" after singular noun
+                elif next_token.text.lower() == "do" and i + 2 < len(doc) and doc[i + 2].text.lower() in ["n't", "not"]:
+                    mistakes.append({
+                        'error_type': 'GRAMMAR',
+                        'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT_DONT',
+                        'message': f"Singular noun '{token.text}' requires 'doesn't', not 'don't'",
+                        'mistake_text': f"{token.text} don't",
+                        'context': text,
+                        'position': {'start': token.idx, 'end': doc[i + 2].idx + len(doc[i + 2].text)},
+                        'suggestions': [f"{token.text} doesn't"],
+                        'severity': 'high'
+                    })
+                
+                # CASE C: Check for VBP verbs (non-3rd person present) after singular noun
+                # This catches "have", "do", "are" etc. that should be "has", "does", "is"
+                elif next_token.tag_ == 'VBP' and next_token.pos_ == 'VERB':
+                    # Skip if there's an auxiliary/modal before
+                    has_auxiliary = i > 0 and doc[i - 1].text.lower() in ['will', 'would', 'can', 
+                                                                           'could', 'should', 'may', 
+                                                                           'might', 'must']
+                    
+                    if not has_auxiliary:
+                        verb_base = next_token.text.lower()
+                        
+                        # Get third person singular form
+                        irregular_3rd = {
+                            'have': 'has',
+                            'do': 'does',
+                            'are': 'is',
+                        }
+                        
+                        if verb_base in irregular_3rd:
+                            verb_3rd = irregular_3rd[verb_base]
+                        else:
+                            # Regular verbs
+                            if verb_base.endswith(('s', 'sh', 'ch', 'x', 'z', 'o')):
+                                verb_3rd = verb_base + 'es'
+                            elif verb_base.endswith('y') and len(verb_base) > 1 and verb_base[-2] not in 'aeiou':
+                                verb_3rd = verb_base[:-1] + 'ies'
+                            else:
+                                verb_3rd = verb_base + 's'
+                        
+                        mistakes.append({
+                            'error_type': 'GRAMMAR',
+                            'rule_id': 'CUSTOM_SUBJECT_VERB_AGREEMENT',
+                            'message': f"Singular noun '{token.text}' requires '{verb_3rd}', not '{verb_base}'",
+                            'mistake_text': f"{token.text} {next_token.text}",
+                            'context': text,
+                            'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                            'suggestions': [f"{token.text} {verb_3rd}"],
+                            'severity': 'high'
+                        })
+                
+                # CASE D: Check for base verb (VB) after singular noun (without auxiliary)
                 elif next_token.tag_ == 'VB' and next_token.pos_ == 'VERB':
                     # Skip if there's an auxiliary before
                     has_auxiliary = i > 0 and doc[i - 1].text.lower() in ['will', 'would', 'can', 
@@ -283,6 +295,49 @@ class SpokenEnglishGrammarChecker:
                             'suggestions': [f"{token.text} {verb_3rd}"],
                             'severity': 'high'
                         })
+        
+        # ====================================================================================
+        # NEW: CHECK FOR "THERE WAS/WERE" AGREEMENT WITH PLURAL/SINGULAR NOUNS
+        # ====================================================================================
+        for i, token in enumerate(doc):
+            if token.text.lower() == 'there' and i + 1 < len(doc):
+                next_token = doc[i + 1]
+                
+                # Check for "There was" or "There were"
+                if next_token.text.lower() in ['was', 'were']:
+                    # Look ahead to find the noun (skip determiners and adjectives)
+                    j = i + 2
+                    while j < len(doc) and doc[j].pos_ in ['DET', 'ADJ', 'NUM']:
+                        j += 1
+                    
+                    if j < len(doc) and doc[j].pos_ == 'NOUN':
+                        noun = doc[j]
+                        
+                        # Check if plural noun with "was" (should be "were")
+                        if noun.tag_ == 'NNS' and next_token.text.lower() == 'was':
+                            mistakes.append({
+                                'error_type': 'GRAMMAR',
+                                'rule_id': 'CUSTOM_THERE_WAS_WERE',
+                                'message': f"Use 'There were' with plural noun '{noun.text}', not 'There was'",
+                                'mistake_text': f"There was ... {noun.text}",
+                                'context': text,
+                                'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                                'suggestions': ['There were'],
+                                'severity': 'high'
+                            })
+                        
+                        # Check if singular noun with "were" (should be "was")
+                        elif noun.tag_ == 'NN' and next_token.text.lower() == 'were':
+                            mistakes.append({
+                                'error_type': 'GRAMMAR',
+                                'rule_id': 'CUSTOM_THERE_WAS_WERE',
+                                'message': f"Use 'There was' with singular noun '{noun.text}', not 'There were'",
+                                'mistake_text': f"There were ... {noun.text}",
+                                'context': text,
+                                'position': {'start': token.idx, 'end': next_token.idx + len(next_token.text)},
+                                'suggestions': ['There was'],
+                                'severity': 'high'
+                            })
         
         # ====================================================================================
         # END OF SUBJECT-VERB AGREEMENT CHECK
@@ -476,26 +531,63 @@ class SpokenEnglishGrammarChecker:
                         'severity': 'medium'
                     })
         
-        # Check for missing articles before singular countable nouns
+        # ====================================================================================
+        # GENERALIZED: CHECK FOR MISSING ARTICLES BEFORE SINGULAR COUNTABLE NOUNS
+        # ====================================================================================
         for i, token in enumerate(doc):
-            # Check if it's a singular noun without article/determiner
+            # Check if it's a singular noun (NN tag)
             if token.tag_ == 'NN' and i > 0:
                 prev_token = doc[i - 1]
-                # Common subjects/objects that need articles
-                if prev_token.pos_ not in ['DET', 'PRON'] and token.text.lower() in [
-                    'student', 'teacher', 'doctor', 'engineer', 'book', 'car', 
-                    'house', 'phone', 'computer', 'job', 'friend', 'problem'
-                ]:
-                    # Check if it's after "am/is/are/was/were"
-                    if prev_token.text.lower() in ['am', 'is', 'are', 'was', 'were', 'become', 'became']:
+                
+                # Skip if already has determiner/article/possessive before it
+                if prev_token.pos_ in ['DET', 'PRON']:
+                    continue
+                
+                # Skip proper nouns (names, places)
+                if token.pos_ == 'PROPN':
+                    continue
+                
+                # Skip uncountable nouns (common ones)
+                uncountable_nouns = {
+                    'water', 'air', 'rice', 'sugar', 'salt', 'money', 'information',
+                    'advice', 'furniture', 'equipment', 'homework', 'work', 'music',
+                    'traffic', 'weather', 'news', 'research', 'evidence', 'knowledge',
+                    'software', 'feedback', 'progress', 'luggage', 'baggage'
+                }
+                if token.text.lower() in uncountable_nouns:
+                    continue
+                
+                # Skip abstract/mass nouns that typically don't need articles
+                if token.text.lower() in ['time', 'life', 'love', 'death', 'peace', 'war']:
+                    continue
+                
+                # Check if preceded by "am/is/are/was/were/become/became" (linking verbs)
+                if prev_token.text.lower() in ['am', 'is', 'are', 'was', 'were', 'become', 'became']:
+                    # Check if it's a profession/role (these need articles)
+                    # More generalized: any singular countable noun after linking verb needs article
+                    mistakes.append({
+                        'error_type': 'Article Missing',
+                        'rule_id': 'CUSTOM_MISSING_ARTICLE_AFTER_BE',
+                        'message': f"Add 'a' or 'an' before '{token.text}' after '{prev_token.text}'",
+                        'mistake_text': f"{prev_token.text} {token.text}",
+                        'context': text,
+                        'position': {'start': prev_token.idx, 'end': token.idx + len(token.text)},
+                        'suggestions': [f"{prev_token.text} a {token.text}"],
+                        'severity': 'high'
+                    })
+                
+                # Check if preceded by preposition (at, in, on, etc.) without article
+                elif prev_token.pos_ == 'ADP':  # Preposition
+                    # Common prepositions that need article + singular noun
+                    if prev_token.text.lower() in ['at', 'in', 'on', 'to', 'from', 'with', 'by', 'for']:
                         mistakes.append({
                             'error_type': 'Article Missing',
-                            'rule_id': 'CUSTOM_MISSING_ARTICLE',
-                            'message': f"Add 'a' or 'an' before '{token.text}'",
-                            'mistake_text': token.text,
+                            'rule_id': 'CUSTOM_MISSING_ARTICLE_AFTER_PREP',
+                            'message': f"Add 'a' or 'an' before '{token.text}' after preposition '{prev_token.text}'",
+                            'mistake_text': f"{prev_token.text} {token.text}",
                             'context': text,
-                            'position': {'start': token.idx, 'end': token.idx + len(token.text)},
-                            'suggestions': [f'a {token.text}'],
+                            'position': {'start': prev_token.idx, 'end': token.idx + len(token.text)},
+                            'suggestions': [f"{prev_token.text} a {token.text}"],
                             'severity': 'high'
                         })
         
@@ -1002,10 +1094,18 @@ class SpokenEnglishGrammarChecker:
         """
         return json.dumps(analysis, indent=2)
 
-    
-    # Add all your helper methods here (_check_custom_rules, _apply_custom_corrections, etc.)
-    # For brevity, I'm not copying them all, but you should include them
 
+# FastAPI initialization and endpoints
+app = FastAPI(title="Grammar Checker API")
+
+# Enable CORS for Flutter app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize checker once at startup
 checker = SpokenEnglishGrammarChecker()
